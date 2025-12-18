@@ -1,0 +1,8 @@
+{
+  "name": "UsernameColors",
+  "author": "Litruv",
+  "version": "1.0.0",
+  "description": "A plugin that adds colors to usernames in Element.",
+  "gitUrl": "https://github.com/litruv/element-plugin-usernamecolors.git",
+  "main": "main.js"
+}
