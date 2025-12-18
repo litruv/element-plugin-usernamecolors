@@ -143,6 +143,81 @@
     }
 
     /**
+     * Lightweight cache for profile color reads to avoid spamming the homeserver.
+     */
+    const _profileCache = {
+        color: new Map(),
+        ttlMs: 30000,
+    };
+
+    /**
+     * Get a profile field for a user via m.profile_fields API (public profile).
+     * Returns null if unsupported, unset, or on error.
+     * @param {string} userId
+     * @param {string} keyName
+     * @returns {Promise<any|null>}
+     */
+    async function getProfileField(userId, keyName) {
+        try {
+            const client = await waitForClient();
+            const path = `/_matrix/client/v3/profile/${encodeURIComponent(userId)}/${encodeURIComponent(keyName)}`;
+            const res = await client.http.authedRequest("GET", path);
+            if (res && typeof res === "object" && Object.prototype.hasOwnProperty.call(res, "value")) {
+                return res.value;
+            }
+            return res ?? null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Convenience: get a user's profile color with simple caching.
+     * @param {string} userId
+     * @returns {Promise<string|null>}
+     */
+    async function getProfileColor(userId) {
+        const now = Date.now();
+        const cached = _profileCache.color.get(userId);
+        if (cached && (now - cached.ts) < _profileCache.ttlMs) {
+            return cached.value;
+        }
+        const val = await getProfileField(userId, "dev.mates.color");
+        const str = typeof val === "string" ? val : null;
+        _profileCache.color.set(userId, { value: str, ts: now });
+        return str;
+    }
+
+    /**
+     * Set a profile field for the current user via m.profile_fields.
+     * Tries JSON body { value } first, falls back to raw value.
+     * @param {string} keyName
+     * @param {any} value
+     * @returns {Promise<boolean>} true if stored
+     */
+    async function setMyProfileField(keyName, value) {
+        try {
+            const client = await waitForClient();
+            const me = typeof client.getUserId === "function" ? client.getUserId() : null;
+            if (!me) return false;
+            const path = `/_matrix/client/v3/profile/${encodeURIComponent(me)}/${encodeURIComponent(keyName)}`;
+            try {
+                await client.http.authedRequest("PUT", path, undefined, { value });
+                return true;
+            } catch (e) {
+                try {
+                    await client.http.authedRequest("PUT", path, undefined, value);
+                    return true;
+                } catch {
+                    return false;
+                }
+            }
+        } catch {
+            return false;
+        }
+    }
+
+    /**
      * Attach a logger that prints sender/user info whenever a message is sent in any room.
      */
     async function attachMessageLogger() {
@@ -185,6 +260,8 @@
                     const body = content.body || null;
 
                     const perRoomPrefs = await getUserDataFromRoom(room.roomId, sender);
+                    const roomColor = perRoomPrefs && typeof perRoomPrefs.color === "string" ? perRoomPrefs.color : null;
+                    const profileColor = await getProfileColor(sender);
                     const accountColor = sender === myUserId ? await readMyAccountColor() : null;
 
                     // eslint-disable-next-line no-console
@@ -197,9 +274,21 @@
                         avatarHttp,
                         msgtype,
                         body,
+                        roomColor,
+                        profileColor,
                         perRoomPrefs,
                         accountColor,
+                        sources: {
+                            roomState: Boolean(roomColor),
+                            profile: Boolean(profileColor),
+                            accountData: sender === myUserId ? Boolean(accountColor) : false,
+                        },
                     });
+
+                    if (!roomColor && !profileColor && sender !== myUserId) {
+                        // eslint-disable-next-line no-console
+                        console.log(PLUGIN_TAG, "[hint] No color found for", sender, "— ask them to publish to this space or set a profile color.");
+                    }
                 } catch (e) {
                     // eslint-disable-next-line no-console
                     console.error(PLUGIN_TAG, "message logger error", e);
@@ -342,6 +431,10 @@
             publishBtn.textContent = "Publish to current space";
             publishBtn.style.padding = "6px 10px";
 
+            const publishProfileBtn = document.createElement("button");
+            publishProfileBtn.textContent = "Publish to profile";
+            publishProfileBtn.style.padding = "6px 10px";
+
             const status = document.createElement("span");
             status.style.cssText = "margin-left: 8px; opacity: 0.8; font-size: 12px;";
 
@@ -385,10 +478,23 @@
                 }
             });
 
+            publishProfileBtn.addEventListener("click", async () => {
+                const v = (textInput.value || colorInput.value || "").trim();
+                try {
+                    const ok = await setMyProfileField("dev.mates.color", v);
+                    status.textContent = ok ? "Published to profile" : "Profile publish failed";
+                } catch (e) {
+                    status.textContent = "Profile publish failed";
+                    // eslint-disable-next-line no-console
+                    console.error(PLUGIN_TAG, e);
+                }
+            });
+
             row.appendChild(colorInput);
             row.appendChild(textInput);
             row.appendChild(saveBtn);
             row.appendChild(publishBtn);
+            row.appendChild(publishProfileBtn);
             row.appendChild(status);
 
             wrapper.appendChild(title);
